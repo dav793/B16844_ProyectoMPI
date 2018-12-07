@@ -10,8 +10,8 @@
  *                  <initial ticks>
  * 
  *  Prep:       export TMPDIR=/tmp
- *  Compile:    $HOME/opt/usr/local/bin/mpic++ -std=c++11 -o sim ./sim.cpp
- *  Exec:       $HOME/opt/usr/local/bin/mpiexec -np 4 ./sim 200 0.65 20 0.75 0 20 50 300
+ *  Compile:    $HOME/opt/usr/local/bin/mpic++ -std=c++11 -o B16844 ./B16844.cpp
+ *  Exec:       $HOME/opt/usr/local/bin/mpiexec -np 4 ./B16844 1000 0.65 20 0.50 0 20 100 1000
  * 
  *  Restricciones:
  *      - numero de personas debe ser multiplo de cantidad de procesos (de lo contrario se pueden perder algunas personas)
@@ -51,12 +51,16 @@ const int STATE_INFECTED = 1;
 const int STATE_IMMUNE = 2;
 const int STATE_DEAD = 3;
 
-// const bool IS_SILENT = true;
-const bool IS_SILENT = false;
+const bool IS_SILENT = true;
+// const bool IS_SILENT = false;
+
+const bool NOTIFY_ON_TICK_END = true;
+// const bool NOTIFY_ON_TICK_END = false;
 
 const string OUTPUT_FILENAME("out");
 
 const bool PRODUCE_OUTPUT_FILE = true;
+// const bool PRODUCE_OUTPUT_FILE = false;
 
 int main(int argc, char* argv[]) {
 
@@ -107,9 +111,13 @@ int main(int argc, char* argv[]) {
     int people_per_proc = numberPeople / proc_qty;
 
     int* global_people = NULL;
+    int* global_world = new int[worldSize*worldSize*4];
+
+    // root process creates all people and entire world
     if (rank == 0) {
-        // create all people
         global_people = createPeople(numberPeople, startingInfected, worldSize);
+        global_world = createWorld(worldSize, numberPeople, global_people);
+
         currentInfected = startingInfected;
         currentHealthy = numberPeople - startingInfected;
     }
@@ -118,33 +126,14 @@ int main(int argc, char* argv[]) {
     int* local_people = new int[people_per_proc*4];
     MPI_Scatter(global_people, people_per_proc*4, MPI_INT, local_people, people_per_proc*4, MPI_INT, 0, MPI_COMM_WORLD);
 
-    // for (int i = 0; i < people_per_proc; ++i) {
-    //     printf("proc %d person %d: %d %d %d %d\n", rank, i, local_people[i*4+0], local_people[i*4+1], local_people[i*4+2], local_people[i*4+3]);
-    // }
-    
-    // create local world descriptor
-    int* local_world = new int[worldSize * worldSize * 4];
-    local_world = createWorld(worldSize, people_per_proc, local_people);
+    // distribute world among processes
+    MPI_Bcast(global_world, worldSize*worldSize*4, MPI_INT, 0, MPI_COMM_WORLD);
 
-    // for (int i = 0; i < worldSize * worldSize; ++i) {
-    //     printf("proc %d tile (%d, %d): %d %d %d %d\n", rank, i/worldSize, i%worldSize, local_world[i*4+0], local_world[i*4+1], local_world[i*4+2], local_world[i*4+3]);
-    // }
-
-    // synchronize all local worlds into a shared global world
-    int* global_world = new int[worldSize * worldSize * 4];
-    syncWorld(worldSize, local_world, global_world);
-
-    // if (rank == 1) {
-    //     for (int i = 0; i < worldSize * worldSize; ++i) {
-    //         printf("tile (%d, %d): %d %d %d %d\n", i/worldSize, i%worldSize, global_world[i*4+0], global_world[i*4+1], global_world[i*4+2], global_world[i*4+3]);
-    //     }
-    // }
-
+    // execute ticks
     for (int i = 0; i < initialTicks; ++i) {
 
         // each element in vector is a tuple of 3 elements: < person index, previous state, new state >
         vector< tuple< int, int, int > > state_changes;
-
 
         // process infection
         for (int j = 0; j < people_per_proc; ++j) {
@@ -258,12 +247,22 @@ int main(int argc, char* argv[]) {
             local_changes[j*3 + 2] = get<2>(state_changes[j]);
         }
 
-        // each process sends local changes to root process        
-        MPI_Send(local_changes, local_changes_size * 3, MPI_INT, 0, 0, MPI_COMM_WORLD);
+        // each process sends local changes to root process  
+        if (rank != 0) {
+            MPI_Send(local_changes, local_changes_size * 3, MPI_INT, 0, 0, MPI_COMM_WORLD);
+        }   
 
         if (rank == 0) {
             int** global_changes = new int*[proc_qty];
-            for (int j = 0; j < proc_qty; ++j) {
+
+            global_changes[0] = new int[global_changes_sizes[0] * 3];
+            MPI_Sendrecv(local_changes, local_changes_size * 3, MPI_INT,
+                0, 0,
+                global_changes[0], global_changes_sizes[0] * 3, MPI_INT,
+                0, 0,
+                MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+            for (int j = 1; j < proc_qty; ++j) {
                 global_changes[j] = new int[global_changes_sizes[j] * 3];
 
                 // root process compiles all local changes into one global changes 2-dimensional array
@@ -412,13 +411,11 @@ int main(int argc, char* argv[]) {
         if (rank == 0)
             delete [] global_movements;
 
-
         // update person counters
         MPI_Bcast(&currentHealthy, 1, MPI_INT, 0, MPI_COMM_WORLD);
         MPI_Bcast(&currentInfected, 1, MPI_INT, 0, MPI_COMM_WORLD);
         MPI_Bcast(&currentImmune, 1, MPI_INT, 0, MPI_COMM_WORLD);
         MPI_Bcast(&currentDead, 1, MPI_INT, 0, MPI_COMM_WORLD);
-
 
         // log tick stats
         if (rank == 0) {
@@ -429,30 +426,19 @@ int main(int argc, char* argv[]) {
         // broadcast root process' world to every process
         MPI_Bcast(global_world, worldSize * worldSize * 4, MPI_INT, 0, MPI_COMM_WORLD);
 
+        if (rank == 0 && NOTIFY_ON_TICK_END)
+            printf("tick %d done.\n", currentTick);
+
         // if there are no more infected, end simulation
         if (currentInfected == 0) {
             if (rank == 0 && !IS_SILENT)
                 printf("NOTICE: Infection was erradicated during tick %d\n", currentTick);
             break;
         }
-
+        
         currentTick++;
 
     }
-
-    // if (rank == 0) {
-    //     printf("proc 0's world:\n");
-    //     for (int i = 0; i < worldSize * worldSize; ++i) {
-    //         printf("tile (%d, %d): %d %d %d %d\n", i/worldSize, i%worldSize, global_world[i*4+0], global_world[i*4+1], global_world[i*4+2], global_world[i*4+3]);
-    //     }
-    // }
-
-    // if (rank == 1) {
-    //     printf("proc 1's world:\n");
-    //     for (int i = 0; i < worldSize * worldSize; ++i) {
-    //         printf("tile (%d, %d): %d %d %d %d\n", i/worldSize, i%worldSize, global_world[i*4+0], global_world[i*4+1], global_world[i*4+2], global_world[i*4+3]);
-    //     }
-    // }
 
     double local_finish = MPI_Wtime();
     double local_elapsed = local_finish - local_start;
@@ -473,14 +459,9 @@ int main(int argc, char* argv[]) {
     // clean up
     if (rank == 0) {
         delete [] global_people;
-
-        for(int i = 0; i < tickLog.size(); ++i) {
-            delete tickLog[i];
-        }
     }
-    delete [] local_people;
-    delete [] local_world;
     delete [] global_world;
+    delete [] local_people;
 
     MPI_Barrier(MPI_COMM_WORLD); // para sincronizar la finalizaci�n de los procesos
     MPI_Finalize();
@@ -563,7 +544,7 @@ int* createWorld(int worldSize, int numberPeople, int* people) {
 // reduce all local world stats into a combined global world, of which all processes have an exact copy.
 void syncWorld(int worldSize, int* local_world, int* global_world) {
     for (int i = 0; i < worldSize * worldSize; ++i) {
-        MPI_Allreduce(&local_world[i*4+0], &global_world[i*4+0], 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(&local_world[i*4+0], &global_world[i*4+0], 4, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
         MPI_Allreduce(&local_world[i*4+1], &global_world[i*4+1], 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
         MPI_Allreduce(&local_world[i*4+2], &global_world[i*4+2], 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
         MPI_Allreduce(&local_world[i*4+3], &global_world[i*4+3], 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
@@ -581,7 +562,7 @@ void syncWorldCell(int cellX, int cellY, int worldSize, int* local_world, int* g
 }
 
 int getWorldIndexFromPosition(int x, int y, int worldSize) {
-    return (x * worldSize * 4) + (y * 4);
+    return (x * 4) + (y * worldSize * 4);
 }
 
 // generate random float between 0 and 1
@@ -591,7 +572,7 @@ float getRandomFloat() {
 
 // generate random int between <min> (inclusive) and <max> (exclusive)
 int getRandomIntInRange(int min, int max) {
-    return floor(getRandomFloat() * (max-min) + min);
+    return floor(getRandomFloat() * (max-min-1) + min);
 }
 
 void generateOutputFile(string filename, vector<TickLog*>& tickLog) {
