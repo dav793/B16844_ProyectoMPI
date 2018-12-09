@@ -227,14 +227,22 @@ int main(int argc, char* argv[]) {
 
         // each process sends local changes size to root process
         int local_changes_size = state_changes.size();
-        MPI_Send(&local_changes_size, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);    
+        if (rank != 0) {
+            MPI_Send(&local_changes_size, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);    
+        }
 
         // root proc compiles all local change sizes into a single array of change sizes
         int* global_changes_sizes = NULL;
         if (rank == 0) {
             global_changes_sizes =  new int[proc_qty];
 
-            for (int j = 0; j < proc_qty; ++j) {
+            MPI_Sendrecv(&local_changes_size, 1, MPI_INT,
+                0, 0,
+                &global_changes_sizes[0], 1, MPI_INT,
+                0, 0,
+                MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+            for (int j = 1; j < proc_qty; ++j) {
                 MPI_Recv(&global_changes_sizes[j], 1, MPI_INT, j, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);    
             }
         }

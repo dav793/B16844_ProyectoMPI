@@ -13,10 +13,10 @@ David Vargas Barrantes - B16844
         mpic++ -std=c++11 -o B16844 ./B16844.cpp
 
     2. Corra con parámetros para exp1
-        mpiexec -np <CANTIDAD DE PROCESOS> ./B16844 1000000 0.65 20 0.50 0 100000 500 1000
+        mpiexec -np <CANTIDAD DE PROCESOS> -f maq_mpi ./B16844 1000000 0.65 20 0.50 0 100000 500 1000
 
     3. Corra con parámetros para exp2
-        mpiexec -np <CANTIDAD DE PROCESOS> ./B16844 10000000 0.65 20 0.50 0 1000000 1000 1000
+        mpiexec -np <CANTIDAD DE PROCESOS> -f maq_mpi ./B16844 10000000 0.65 20 0.50 0 1000000 1000 1000
 
 
 #   PARAMETROS DE ENTRADA:
